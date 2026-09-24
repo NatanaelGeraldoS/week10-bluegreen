@@ -71,12 +71,6 @@ jobs:
           kubectl apply \
             -f kubernetes/production/
 
-      - name: Update frontend image
-        run: |
-          kubectl set image deployment/frontend \
-            frontend=${{ vars.ACR_LOGIN_SERVER }}/koalatech-frontend:${{ github.event.workflow_run.head_sha }} \
-            -n production
-
       - name: Update user-service image
         run: |
           kubectl set image deployment/user-service \
@@ -106,12 +100,6 @@ jobs:
           kubectl set image deployment/enrollment-service \
             enrollment-service=${{ vars.ACR_LOGIN_SERVER }}/koalatech-enrollment-service:${{ github.event.workflow_run.head_sha }} \
             -n production
-
-      - name: Wait for frontend rollout
-        run: |
-          kubectl rollout status deployment/frontend \
-            -n production \
-            --timeout=300s
 
       - name: Wait for user-service rollout
         run: |

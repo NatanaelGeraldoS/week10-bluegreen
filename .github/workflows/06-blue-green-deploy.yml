@@ -1,0 +1,88 @@
+name: 06 - Blue - Green Deploy Production
+
+on:
+  workflow_run:
+    workflows:
+      - "03 - Test Staging"
+    types:
+      - completed
+    branches:
+      - main
+
+jobs:
+  blue-green-deploy:
+    name: Blue-Green Deploy & Auto Rollback System
+    runs-on: ubuntu-latest
+
+    if: >
+      github.event.workflow_run.conclusion == 'success'
+    
+    environment:
+      name: production
+
+    steps:
+      - name: Login to Azure
+        uses: azure/login@v3
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Get AKS credentials
+        run: |
+          az aks get-credentials \
+            --resource-group ${{ vars.AKS_RESOURCE_GROUP }} \
+            --name ${{ vars.AKS_CLUSTER_NAME }} \
+            --overwrite-existing
+          
+      - name: Deploy to target color and smoke test
+        run: |
+          CURRENT_ENV=$(kubectl get service frontend -n production -o jsonpath='{.spec.selector.version}')
+          if [ "$CURRENT_ENV" = "blue" ]; then TARGET_ENV=green; else TARGET_ENV=blue; fi
+          echo "Current color: $CURRENT_ENV | Target color: $TARGET_ENV"
+          echo "CURRENT_ENV=$CURRENT_ENV" >> "$GITHUB_ENV"
+          echo "TARGET_ENV=$TARGET_ENV" >> "$GITHUB_ENV"
+
+          kubectl set image deployment/frontend-$TARGET_ENV  \
+            frontend=${{ vars.ACR_LOGIN_SERVER }}/koalatech-frontend:${{ github.event.workflow_run.head_sha }} \
+            -n production
+
+      - name: Wait for frontend rollout
+        run: |
+          kubectl rollout status deployment/frontend-${{env.TARGET_ENV}} \
+            -n production \
+            --timeout=300s
+
+      - name: Smoke test target color
+        id: smoke_test
+        run: |
+          kubectl port-forward svc/frontend-${{ env.TARGET_ENV }} 8080:80 -n production &
+          sleep 5
+          curl --fail --silent http://localhost:8080
+
+      - name: Switch traffic and monitor error rate
+        run: |
+          kubectl patch service frontend -n production -p \
+            "{\"spec\":{\"selector\":{\"app\":\"frontend\",\"version\":\"${{ env.TARGET_ENV }}\"}}}"
+          echo "Switch traffic from ${{ env.CURRENT_ENV }} to ${{ env.TARGET_ENV }}"
+
+          IP=$(kubectl get service frontend -n production -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+          ERRORS=0
+
+          for i in $(seq 1 12); do
+            STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" "http://$IP" || echo 000)
+            if [ "$STATUS" -lt 200 ] || [ "$STATUS" -ge 500 ]; then
+              ERRORS=$((ERRORS+1))
+            fi
+            sleep 5
+          done
+
+          ERROR_RATE=$((ERRORS * 100 / 12))
+          echo "Error rate: $ERROR_RATE%"
+          echo "ERROR_RATE=$ERROR_RATE" >> "$GITHUB_ENV"
+      - name: Rollback if too much error
+        if: env.ERROR_RATE > 20
+        run: |
+          echo "ERROR RATE exceeds thresholds, Rolling back to ${{env.CURRENT_ENV}}"
+          kubectl patch service frontend -n production -p \
+            "{\"spec\":{\"selector\":{\"app\":\"frontend\",\"version\":\"${{ env.CURRENT_ENV }}\"}}}"
+          exit 1
