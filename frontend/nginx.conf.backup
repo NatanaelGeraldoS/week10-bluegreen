@@ -1,3 +1,8 @@
+split_clients "${request_id}" $demo_variant {
+    30%     failing;
+    *       ok;
+}
+
 server {
     listen 80;
     server_name localhost;
@@ -58,6 +63,9 @@ server {
     }
 
     location / {
+        if ($demo_variant = failing) {
+            return 500;
+        }
         try_files $uri $uri/ /index.html;
     }
 
