@@ -33,7 +33,7 @@ jobs:
             --name ${{ vars.AKS_CLUSTER_NAME }} \
             --overwrite-existing
           
-      - name: Deploy to target color and smoke test
+      - name: Deploy to target color
         run: |
           CURRENT_ENV=$(kubectl get service frontend -n production -o jsonpath='{.spec.selector.version}')
           if [ "$CURRENT_ENV" = "blue" ]; then TARGET_ENV=green; else TARGET_ENV=blue; fi
@@ -54,9 +54,11 @@ jobs:
       - name: Smoke test target color
         id: smoke_test
         run: |
-          kubectl port-forward svc/frontend-${{ env.TARGET_ENV }} 8080:80 -n production &
+          kubectl port-forward deployment/frontend-${{ env.TARGET_ENV }} 8080:80 -n production &
+          PORT_FORWARD_PID=$!
+          trap 'kill "$PORT_FORWARD_PID" 2>/dev/null || true' EXIT
           sleep 5
-          curl --fail --silent http://localhost:8080
+          curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8080
 
       - name: Switch traffic and monitor error rate
         run: |
